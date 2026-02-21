@@ -30,6 +30,15 @@ class ChatRequest(BaseModel):
     message: str | None = None
 
 
+class StudyRequest(BaseModel):
+    text: str | None = None
+
+
+class StudyChatRequest(BaseModel):
+    question: str | None = None
+    text: str | None = None
+
+
 def generate_local_reply(message: str) -> str:
     m = (message or "").lower()
     if any(k in m for k in ("sad", "upset", "unhappy", "depressed")):
@@ -57,6 +66,48 @@ def generate_local_reply(message: str) -> str:
         "Thanks for sharing — try taking three slow breaths.",
         "I'm here for you. Want a calming activity suggestion?"
     ])
+
+def extract_key_points_locally(text: str, max_points: int = 5) -> list[str]:
+    cleaned = (text or "").replace("\n", " ").strip()
+    if not cleaned:
+        return []
+
+    raw_sentences = [s.strip() for s in cleaned.split(".") if s.strip()]
+    if not raw_sentences:
+        return []
+
+    keywords = ("important", "key", "must", "should", "therefore", "because", "definition")
+    scored = []
+    for sentence in raw_sentences:
+        score = 0
+        lower = sentence.lower()
+        if any(k in lower for k in keywords):
+            score += 2
+        score += min(len(sentence) // 80, 2)
+        scored.append((score, sentence))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    selected = [s for _, s in scored[:max_points]]
+    if not selected:
+        selected = raw_sentences[:max_points]
+    return [p[:220] + ("..." if len(p) > 220 else "") for p in selected]
+
+
+def study_fallback_answer(question: str, text: str) -> str:
+    q = (question or "").lower()
+    points = extract_key_points_locally(text, max_points=4)
+    if "summar" in q:
+        if points:
+            return "Quick summary:\n- " + "\n- ".join(points)
+        return "I need more study material to summarize. Please upload a document or paste text."
+    if "explain" in q:
+        if points:
+            return f"Here is a simple explanation based on your material: {points[0]}"
+        return "Share the topic text and I can explain it step by step."
+    if points:
+        return "From your material, focus on these points:\n- " + "\n- ".join(points[:3])
+    return "Upload or paste study text and ask me to summarize, explain, or quiz you."
+
 
 def generate_environment():
 
@@ -202,5 +253,77 @@ async def chat(payload: ChatRequest | None = None, message: str | None = None):
     except Exception:
         # Use local fallback generator so responses vary and are helpful offline
         reply = generate_local_reply(final_message)
+
+    return {"reply": reply}
+
+
+@app.post("/study/highlights")
+async def study_highlights(payload: StudyRequest):
+    text = (payload.text or "").strip()
+    if not text:
+        return {"highlights": [], "message": "No study text provided."}
+
+    local_points = extract_key_points_locally(text)
+
+    try:
+        if client is None:
+            raise RuntimeError("GROQ_API_KEY is not configured")
+        completion = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Extract the 5 most important study points as short bullet lines."
+                },
+                {"role": "user", "content": text[:8000]},
+            ],
+        )
+        reply = (completion.choices[0].message.content or "").strip()
+        ai_points = [p.strip("- ").strip() for p in reply.splitlines() if p.strip()][:5]
+        points = ai_points or local_points
+    except Exception:
+        points = local_points
+
+    return {"highlights": points}
+
+
+@app.post("/study/chat")
+async def study_chat(payload: StudyChatRequest):
+    question = (payload.question or "").strip()
+    study_text = (payload.text or "").strip()
+
+    if not question:
+        return {"reply": "Please ask a study question."}
+
+    try:
+        if client is None:
+            raise RuntimeError("GROQ_API_KEY is not configured")
+
+        context = study_text[:12000] if study_text else ""
+        completion = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a patient study assistant for children. "
+                        "Explain clearly, keep structure simple, and stay grounded in provided material."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Study Material:\n{context}\n\n"
+                        f"Question: {question}\n\n"
+                        "If material is missing for the answer, say what is missing."
+                    ),
+                },
+            ],
+        )
+        reply = (completion.choices[0].message.content or "").strip()
+        if not reply:
+            reply = study_fallback_answer(question, study_text)
+    except Exception:
+        reply = study_fallback_answer(question, study_text)
 
     return {"reply": reply}

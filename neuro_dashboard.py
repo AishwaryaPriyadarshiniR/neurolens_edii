@@ -1,6 +1,19 @@
-import streamlit as st
-import requests
 import os
+import tempfile
+from io import BytesIO
+
+import requests
+import streamlit as st
+
+try:
+    from pypdf import PdfReader
+except Exception:
+    PdfReader = None
+
+try:
+    import docx2txt
+except Exception:
+    docx2txt = None
 
 try:
     api_from_secrets = st.secrets["API_URL"]
@@ -8,6 +21,71 @@ except Exception:
     api_from_secrets = None
 
 API = (api_from_secrets or os.getenv("API_URL") or "http://127.0.0.1:8000").rstrip("/")
+
+
+def extract_uploaded_text(uploaded_file) -> str:
+    if not uploaded_file:
+        return ""
+
+    ext = os.path.splitext(uploaded_file.name.lower())[1]
+    raw = uploaded_file.getvalue()
+
+    if ext in (".txt", ".md"):
+        return raw.decode("utf-8", errors="ignore")
+
+    if ext == ".pdf":
+        if PdfReader is None:
+            st.warning("PDF parser not installed. Add pypdf to requirements.")
+            return ""
+        reader = PdfReader(BytesIO(raw))
+        parts = []
+        for page in reader.pages:
+            parts.append(page.extract_text() or "")
+        return "\n".join(parts).strip()
+
+    if ext == ".docx":
+        if docx2txt is None:
+            st.warning("DOCX parser not installed. Add docx2txt to requirements.")
+            return ""
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+                tmp.write(raw)
+                temp_path = tmp.name
+            return (docx2txt.process(temp_path) or "").strip()
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+    st.warning("Unsupported file format.")
+    return ""
+
+
+def send_study_question(question: str):
+    st.session_state.study_chat_history.append({"role": "user", "message": question})
+    with st.chat_message("user"):
+        st.write(question)
+
+    try:
+        resp = requests.post(
+            f"{API}/study/chat",
+            json={
+                "question": question,
+                "text": st.session_state.get("study_text", ""),
+            },
+            timeout=20,
+        )
+        if resp.ok:
+            reply = resp.json().get("reply", "I could not generate a study response right now.")
+        else:
+            reply = "Study assistant is unavailable right now."
+    except requests.RequestException:
+        reply = "Could not reach study assistant. Try again."
+
+    st.session_state.study_chat_history.append({"role": "assistant", "message": reply})
+    with st.chat_message("assistant"):
+        st.write(reply)
+
 
 st.set_page_config(page_title="NeuroLens")
 
@@ -22,24 +100,14 @@ st.markdown(
 )
 
 if "role" not in st.session_state:
-
     st.title("NeuroLens")
-
-    role = st.radio("Who is using NeuroLens?",
-                    ["Parent / Caregiver", "Child"])
-
+    role = st.radio("Who is using NeuroLens?", ["Parent / Caregiver", "Child"])
     if st.button("Continue"):
         st.session_state.role = role
         st.rerun()
 
-# ============================================================
-# PARENT VIEW
-# ============================================================
-
 elif st.session_state.role == "Parent / Caregiver":
-
     st.title("Parent / Caregiver View")
-
     st.subheader("Comfort Thresholds")
 
     brightness_t = st.slider("Brightness Threshold", 0, 100, 50)
@@ -60,13 +128,11 @@ elif st.session_state.role == "Parent / Caregiver":
 
     try:
         data = requests.get(f"{API}/state", timeout=5).json()
-
         st.metric("Brightness", f'{data["brightness"]}%')
         st.metric("Noise", f'{data["noise"]} dB')
 
         if data["exceeded"]:
             st.warning("Warning: values exceed thresholds")
-
             if st.button("Auto Adjust"):
                 try:
                     requests.post(f"{API}/auto-adjust", timeout=5)
@@ -75,7 +141,6 @@ elif st.session_state.role == "Parent / Caregiver":
                     st.warning("Auto-adjust failed. Please try again.")
         else:
             st.success("Values within thresholds")
-
     except Exception:
         st.error("Backend not reachable")
 
@@ -83,15 +148,12 @@ elif st.session_state.role == "Parent / Caregiver":
         del st.session_state.role
         st.rerun()
 
-# ============================================================
-# CHILD VIEW
-# ============================================================
-
 else:
-
     st.title("Child View")
 
-    mode = st.selectbox("Comfort Mode", ["Calm", "Focus", "Neutral"])
+    mode_label = st.selectbox("Comfort Mode", ["Calm", "Focus / Study", "Neutral"])
+    mode_api = {"Calm": "Calm", "Focus / Study": "Focus", "Neutral": "Neutral"}[mode_label]
+
     mode_theme = {
         "Calm": {
             "bg": "#EAF7F2",
@@ -106,7 +168,7 @@ else:
             "success_bg": "#D7F3E4",
             "success_text": "#175A43",
         },
-        "Focus": {
+        "Focus / Study": {
             "bg": "#FFF7E8",
             "panel": "#FFE6B8",
             "button": "#D98E04",
@@ -133,7 +195,8 @@ else:
             "success_text": "#2F5D3B",
         },
     }
-    theme = mode_theme[mode]
+    theme = mode_theme[mode_label]
+
     st.markdown(
         f"""
         <style>
@@ -174,8 +237,9 @@ else:
         """,
         unsafe_allow_html=True,
     )
+
     try:
-        requests.post(f"{API}/set-child-mode", params={"mode": mode}, timeout=5)
+        requests.post(f"{API}/set-child-mode", params={"mode": mode_api}, timeout=5)
     except requests.RequestException:
         st.warning("Could not update mode right now.")
 
@@ -183,65 +247,124 @@ else:
         data = requests.get(f"{API}/state", timeout=5).json()
         st.metric("Brightness", f'{data["brightness"]}%')
         st.metric("Noise", f'{data["noise"]} dB')
-
         if data["exceeded"]:
             st.info("Adjusting environment for comfort")
     except requests.RequestException:
         st.warning("Environment state is temporarily unavailable.")
 
     st.markdown("---")
-    st.subheader("NeuroLens Companion")
 
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
+    if mode_label == "Focus / Study":
+        st.subheader("Focus / Study Mode")
+        st.caption("Upload study material or paste text, then ask the assistant to summarize or explain.")
 
-    # Render existing messages
-    for entry in st.session_state.chat_history:
-        with st.chat_message(entry["role"]):
-            st.write(entry["message"])
+        if "study_text" not in st.session_state:
+            st.session_state.study_text = ""
+        if "study_highlights" not in st.session_state:
+            st.session_state.study_highlights = []
+        if "study_chat_history" not in st.session_state:
+            st.session_state.study_chat_history = []
 
-    # ---------- Message Sender ----------
-    def send_user_message(msg):
+        uploaded_file = st.file_uploader(
+            "Upload document",
+            type=["txt", "md", "pdf", "docx"],
+            help="Accepted: TXT, MD, PDF, DOCX",
+        )
+        pasted_text = st.text_area("Or paste study text", height=180)
 
-        st.session_state.chat_history.append({"role": "user", "message": msg})
+        if st.button("Use This Material"):
+            extracted = extract_uploaded_text(uploaded_file)
+            final_text = "\n\n".join([t for t in [pasted_text.strip(), extracted.strip()] if t]).strip()
+            st.session_state.study_text = final_text
 
-        with st.chat_message("user"):
-            st.write(msg)
-
-        try:
-            resp = requests.post(f"{API}/chat", json={"message": msg}, timeout=15)
-
-            if resp.ok:
-                reply = resp.json().get("reply", "Sorry, I couldn't generate a reply.")
+            if not final_text:
+                st.warning("Please upload a document or paste some text first.")
             else:
-                reply = "Sorry, the assistant is unavailable."
+                try:
+                    resp = requests.post(
+                        f"{API}/study/highlights",
+                        json={"text": final_text},
+                        timeout=20,
+                    )
+                    if resp.ok:
+                        st.session_state.study_highlights = resp.json().get("highlights", [])
+                    else:
+                        st.session_state.study_highlights = []
+                        st.warning("Could not generate highlights right now.")
+                except requests.RequestException:
+                    st.session_state.study_highlights = []
+                    st.warning("Could not contact backend for highlights.")
 
-        except requests.RequestException:
-            reply = "Error contacting assistant. Please try again."
+        if st.session_state.study_text:
+            st.success(f"Study material loaded ({len(st.session_state.study_text)} characters).")
 
-        st.session_state.chat_history.append({"role": "assistant", "message": reply})
+        if st.session_state.study_highlights:
+            st.markdown("**Important points**")
+            for point in st.session_state.study_highlights:
+                st.write(f"- {point}")
 
-        with st.chat_message("assistant"):
-            st.write(reply)
+        st.markdown("---")
+        st.subheader("Study Assistant")
 
-    # Suggested prompts
-    sample_prompts = [
-        "I'm feeling sad and don't know why.",
-        "I can't focus on my homework.",
-        "I'm nervous about school tomorrow.",
-    ]
+        for entry in st.session_state.study_chat_history:
+            with st.chat_message(entry["role"]):
+                st.write(entry["message"])
 
-    cols = st.columns(len(sample_prompts))
+        study_prompts = [
+            "Summarize this material in simple points.",
+            "Explain the toughest topic in easy words.",
+            "Ask me 5 quick quiz questions from this.",
+        ]
+        cols = st.columns(len(study_prompts))
+        for i, p in enumerate(study_prompts):
+            if cols[i].button(p, key=f"study_prompt_{i}"):
+                send_study_question(p)
 
-    for i, p in enumerate(sample_prompts):
-        if cols[i].button(p, key=f"sample_{i}"):
-            send_user_message(p)
+        study_msg = st.chat_input(
+            "Ask about your study material...",
+            key="study_chat_input",
+        )
+        if study_msg:
+            send_study_question(study_msg)
 
-    # Custom input
-    user_msg = st.chat_input("Tell me how you're feeling...")
+    else:
+        st.subheader("NeuroLens Companion")
+        if "chat_history" not in st.session_state:
+            st.session_state.chat_history = []
 
-    if user_msg:
-        send_user_message(user_msg)
+        for entry in st.session_state.chat_history:
+            with st.chat_message(entry["role"]):
+                st.write(entry["message"])
+
+        def send_user_message(msg):
+            st.session_state.chat_history.append({"role": "user", "message": msg})
+            with st.chat_message("user"):
+                st.write(msg)
+            try:
+                resp = requests.post(f"{API}/chat", json={"message": msg}, timeout=15)
+                if resp.ok:
+                    reply = resp.json().get("reply", "Sorry, I couldn't generate a reply.")
+                else:
+                    reply = "Sorry, the assistant is unavailable."
+            except requests.RequestException:
+                reply = "Error contacting assistant. Please try again."
+            st.session_state.chat_history.append({"role": "assistant", "message": reply})
+            with st.chat_message("assistant"):
+                st.write(reply)
+
+        sample_prompts = [
+            "I'm feeling sad and don't know why.",
+            "I feel restless and distracted.",
+            "I'm nervous about school tomorrow.",
+        ]
+        cols = st.columns(len(sample_prompts))
+        for i, p in enumerate(sample_prompts):
+            if cols[i].button(p, key=f"sample_{i}"):
+                send_user_message(p)
+
+        user_msg = st.chat_input("Tell me how you're feeling...", key="companion_chat_input")
+        if user_msg:
+            send_user_message(user_msg)
 
     if st.button("Switch User"):
         del st.session_state.role
