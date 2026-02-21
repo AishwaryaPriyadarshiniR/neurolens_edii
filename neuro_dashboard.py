@@ -92,6 +92,88 @@ else:
     st.title("Child View")
 
     mode = st.selectbox("Comfort Mode", ["Calm", "Focus", "Neutral"])
+    mode_theme = {
+        "Calm": {
+            "bg": "#EAF7F2",
+            "panel": "#D5EFE5",
+            "button": "#4C9F84",
+            "user_chat": "#CDEBDD",
+            "assistant_chat": "#E9F7F1",
+            "warning_bg": "#FCE9D9",
+            "warning_text": "#8A4B21",
+            "info_bg": "#DDF1E9",
+            "info_text": "#1F6A4F",
+            "success_bg": "#D7F3E4",
+            "success_text": "#175A43",
+        },
+        "Focus": {
+            "bg": "#FFF7E8",
+            "panel": "#FFE6B8",
+            "button": "#D98E04",
+            "user_chat": "#FFE0A6",
+            "assistant_chat": "#FFF1D6",
+            "warning_bg": "#FFE3CC",
+            "warning_text": "#8A3E00",
+            "info_bg": "#FFF0CC",
+            "info_text": "#7A4B00",
+            "success_bg": "#FFE9B8",
+            "success_text": "#6B4A00",
+        },
+        "Neutral": {
+            "bg": "#F1F2F6",
+            "panel": "#DEE1EA",
+            "button": "#687086",
+            "user_chat": "#D7DCE8",
+            "assistant_chat": "#ECEFF5",
+            "warning_bg": "#F6E4E4",
+            "warning_text": "#7D2E2E",
+            "info_bg": "#E4EAF4",
+            "info_text": "#304866",
+            "success_bg": "#E2F0E6",
+            "success_text": "#2F5D3B",
+        },
+    }
+    theme = mode_theme[mode]
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{ background-color: {theme["bg"]}; }}
+        div[data-testid="stMetric"] {{
+            background-color: {theme["panel"]};
+            border-radius: 10px;
+            padding: 10px;
+        }}
+        .stButton>button {{
+            background-color: {theme["button"]};
+            color: white;
+            border: none;
+        }}
+        div[data-testid="stChatMessage"]:has(div[data-testid="chatAvatarIcon-user"]) {{
+            background-color: {theme["user_chat"]};
+            border-radius: 12px;
+            padding: 6px 10px;
+        }}
+        div[data-testid="stChatMessage"]:has(div[data-testid="chatAvatarIcon-assistant"]) {{
+            background-color: {theme["assistant_chat"]};
+            border-radius: 12px;
+            padding: 6px 10px;
+        }}
+        div[data-baseweb="notification"][kind="warning"] {{
+            background-color: {theme["warning_bg"]};
+            color: {theme["warning_text"]};
+        }}
+        div[data-baseweb="notification"][kind="info"] {{
+            background-color: {theme["info_bg"]};
+            color: {theme["info_text"]};
+        }}
+        div[data-baseweb="notification"][kind="success"] {{
+            background-color: {theme["success_bg"]};
+            color: {theme["success_text"]};
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     try:
         requests.post(f"{API}/set-child-mode", params={"mode": mode}, timeout=5)
     except requests.RequestException:
