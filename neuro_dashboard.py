@@ -201,10 +201,16 @@ else:
         f"""
         <style>
         .stApp {{ background-color: {theme["bg"]}; }}
+        .stApp, .stMarkdown, .stText, .stCaption, label, p, span, div {{
+            color: #111111;
+        }}
         div[data-testid="stMetric"] {{
             background-color: {theme["panel"]};
             border-radius: 10px;
             padding: 10px;
+        }}
+        div[data-testid="stMetric"] * {{
+            color: #111111 !important;
         }}
         .stButton>button {{
             background-color: {theme["button"]};
